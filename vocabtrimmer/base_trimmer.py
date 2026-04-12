@@ -8,9 +8,10 @@ from math import prod
 import pandas as pd
 import torch
 from tokenizers import models
-from huggingface_hub import Repository
+
+
 from transformers import MT5ForConditionalGeneration, MBartForConditionalGeneration, AutoConfig, pipeline, \
-    AutoTokenizer, AutoModelForMaskedLM, AutoModelForTokenClassification, AutoModelForSequenceClassification
+    AutoTokenizer, AutoModelForMaskedLM, AutoModelForTokenClassification, AutoModelForSequenceClassification, AutoModel
 from .util import safe_rmtree, pretty
 from .vocab_miner import vocab_miner
 
@@ -75,10 +76,7 @@ def push_to_hub(model, source_model, tokenizer, repo_id: str):
     readme += df.T.to_markdown()
     readme += f"\n\n\nFollowing table shows the parameter used to trim vocabulary.\n\n " \
               f"{pd.DataFrame([model.config.vocabtrimmer['mining_config']]).to_markdown(index=False)}"
-    repo = Repository(os.path.basename(repo_id), repo_id)
-    with open(f"{os.path.basename(repo_id)}/README.md", "w") as f:
-        f.write(readme)
-    repo.push_to_hub()
+    raise NotImplementedError("push_to_hub requires huggingface_hub>=0.8 with Repository support")
     safe_rmtree(os.path.basename(repo_id))
 
 
@@ -119,7 +117,7 @@ class VocabTrimmer:
             elif self.config.architectures[0].endswith("MaskedLM"):
                 self.__model_class = AutoModelForMaskedLM
             else:
-                raise ValueError(f"model type {self.config.architectures} is not supported.")
+                self.__model_class = AutoModel
 
         self.model = self.__model_class.from_pretrained(model_name, config=self.config)
         self.param_size_full_raw, self.param_size_embedding_raw, self.vocab_size_raw = self.show_parameter(log=True)
@@ -187,6 +185,8 @@ class VocabTrimmer:
         vocab.update(new_vocab)
         if tokens_to_keep is not None:
             vocab.update({i: self.tokenizer.vocab[i] for i in tokens_to_keep})
+        embedding_size = len(self.model.get_input_embeddings().weight)
+        vocab = {k: v for k, v in vocab.items() if v < embedding_size}
         new_vocab_id = sorted(vocab.values())
         new_vocab = list(vocab.keys())
         logging.info(f'trimming vocabulary: {pretty(len(self.tokenizer.vocab))} (original) -> {pretty(len(new_vocab_id))} (target)')
@@ -242,11 +242,19 @@ class VocabTrimmer:
         if is_dict:
             new_state = dict(new_state)
         model_state['vocab'] = new_state
+        if 'merges' in model_state and isinstance(model_state['merges'], list):
+            new_vocab_set = set(new_vocab)
+            model_state['merges'] = [
+                tuple(m) if isinstance(m, list) else m
+                for m in model_state['merges']
+                if (m[0] in new_vocab_set and m[1] in new_vocab_set and m[0] + m[1] in new_vocab_set)
+            ]
         model_class = getattr(models, model_state.pop("type"))
+        model_state = {k: v for k, v in model_state.items() if v is not None}
         self.tokenizer.backend_tokenizer.model = model_class(**model_state)
 
         # update additional tokens (tokens added after pre-training won't be re-indexed above so need a dirty hack)
-        additional_special_tokens = [i for i in self.tokenizer.additional_special_tokens if i not in MBART_LANG_ID]
+        additional_special_tokens = [i for i in getattr(self.tokenizer, 'additional_special_tokens', []) if i not in MBART_LANG_ID]
         if len(additional_special_tokens) != 0:
             logging.info(f"updating additional_special_tokens of tokenizer")
             logging.info(f"num of add tokens: {len(additional_special_tokens)}")

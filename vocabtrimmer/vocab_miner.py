@@ -62,19 +62,29 @@ def vocab_miner(model: str = 'google/mt5-small', language: str = 'ja', dataset: 
         os.makedirs(os.path.dirname(cache_file_frequency), exist_ok=True)
 
         # processing dataset
-        dataset = load_dataset(dataset, dataset_name, split=dataset_split)
-
-        # tokenization
-        logging.info(f"caching all tokens to {cache_file_frequency}")
-        batch = []
+        datasets = dataset if isinstance(dataset, list) else [dataset]
         fq = defaultdict(int)
-        for t in tqdm(dataset):
-            batch.append(t[dataset_column])
-            if len(batch) >= chunk:
-                fq = update_fq(chain(*tokenizer(batch)['input_ids']), fq)
-                batch = []
-        if len(batch) != 0:
-            fq = update_fq(chain(*tokenizer(batch)['input_ids']), fq)
+        for ds in datasets:
+            if os.path.exists(ds) and ds.endswith('.json'):
+                with open(ds) as f:
+                    raw = json.load(f)
+                texts = list(raw.values()) if isinstance(raw, dict) else [t[dataset_column] for t in raw]
+                ds = [{'text': t} for t in texts]
+                col = 'text'
+            else:
+                ds = load_dataset(ds, dataset_name, split=dataset_split)
+                col = dataset_column
+
+            # tokenization
+            logging.info(f"caching all tokens to {cache_file_frequency}")
+            batch = []
+            for t in tqdm(ds):
+                batch.append(t[col])
+                if len(batch) >= chunk:
+                    fq = update_fq(chain(*tokenizer(batch, truncation=True, max_length=tokenizer.model_max_length)['input_ids']), fq)
+                    batch = []
+            if len(batch) != 0:
+                fq = update_fq(chain(*tokenizer(batch, truncation=True, max_length=tokenizer.model_max_length)['input_ids']), fq)
         logging.info(f"saving frequency file to {cache_file_frequency}")
         with open(cache_file_frequency, "w") as f:
             json.dump(fq, f)
