@@ -1,4 +1,7 @@
 import logging
+import os
+
+os.environ["HF_DATASETS_CACHE"] = os.path.expanduser("~/.cache/huggingface/datasets")
 
 from vocabtrimmer import VocabTrimmer
 
@@ -13,6 +16,7 @@ LANGUAGE = "vi"
 PATH_TO_SAVE = "model/gemma300-vi-trimmed"
 DATASET_FILES = [
     "crosslingual/original/merged_queries_vi.json",
+    "crosslingual/eval/filtered_corpus.json",
 ]
 
 trimmer = VocabTrimmer(MODEL)
