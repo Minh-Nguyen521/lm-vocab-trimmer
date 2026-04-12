@@ -273,6 +273,8 @@ class VocabTrimmer:
         vocab.update(new_vocab)
         if tokens_to_keep is not None:
             vocab.update({i: self.tokenizer.vocab[i] for i in tokens_to_keep})
+        embedding_size = len(self.model.get_input_embeddings().weight)
+        vocab = {k: v for k, v in vocab.items() if v < embedding_size}
         new_vocab_id = sorted(vocab.values())
         new_vocab = list(vocab.keys())
         logging.info(
@@ -325,26 +327,37 @@ class VocabTrimmer:
         ####################
         logging.info("updating tokenizer")
 
+        # mapping from original token ID -> new sequential ID (0 to N-1)
+        old_to_new_id = {old_id: new_id for new_id, old_id in enumerate(new_vocab_id)}
+
         # update main vocab (except for the additionally added tokens, which NOT includes <pad>, <s>, </s>, <unk>)
         model_state = json.loads(self.tokenizer.backend_tokenizer.model.__getstate__())
         is_dict = False
         if type(model_state["vocab"]) is dict:
             is_dict = True
             model_state["vocab"] = list(model_state["vocab"].items())
+        new_vocab_set = set(new_vocab)
         new_state = []
         for w, s in tqdm(model_state["vocab"]):
-            if w in new_vocab:
-                new_state.append((w, s))
+            if w in new_vocab_set:
+                new_state.append((w, old_to_new_id.get(s, s)))
         if is_dict:
             new_state = dict(new_state)
         model_state["vocab"] = new_state
+        if "merges" in model_state and isinstance(model_state["merges"], list):
+            model_state["merges"] = [
+                tuple(m) if isinstance(m, list) else m
+                for m in model_state["merges"]
+                if (m[0] in new_vocab_set and m[1] in new_vocab_set and m[0] + m[1] in new_vocab_set)
+            ]
         model_class = getattr(models, model_state.pop("type"))
+        model_state = {k: v for k, v in model_state.items() if v is not None}
         self.tokenizer.backend_tokenizer.model = model_class(**model_state)
 
         # update additional tokens (tokens added after pre-training won't be re-indexed above so need a dirty hack)
         additional_special_tokens = [
             i
-            for i in self.tokenizer.additional_special_tokens
+            for i in getattr(self.tokenizer, "additional_special_tokens", [])
             if i not in MBART_LANG_ID
         ]
         if len(additional_special_tokens) != 0:
