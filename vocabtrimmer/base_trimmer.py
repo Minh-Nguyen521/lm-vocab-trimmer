@@ -311,9 +311,11 @@ class VocabTrimmer:
 
             self.model.set_output_embeddings(linear)
 
-        # resize model vocab
-        self.model.config.vocab_size = len(new_vocab_id)
-        self.model.resize_token_embeddings(self.model.config.vocab_size)
+        # pad vocab size to multiple of 128 for GPU efficiency
+        pad_size = ((len(new_vocab_id) + 127) // 128) * 128
+        self.model.config.vocab_size = pad_size
+        self.model.resize_token_embeddings(pad_size)
+        logging.info(f"vocab padded: {len(new_vocab_id)} -> {pad_size}")
 
         # save to tem directory and load it
         self.model.save_pretrained(path_to_save)
