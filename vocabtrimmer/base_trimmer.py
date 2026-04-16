@@ -3,6 +3,7 @@ import logging
 import os
 from math import prod
 from typing import List
+import shutil
 
 import pandas as pd
 import torch
@@ -133,9 +134,44 @@ def push_to_hub(model, source_model, tokenizer, repo_id: str):
     safe_rmtree(os.path.basename(repo_id))
 
 
-def save_pretrained(model, tokenizer, path_to_save):
+def save_pretrained(model, tokenizer, path_to_save, source_model: str = None):
     model.save_pretrained(path_to_save)
     tokenizer.save_pretrained(path_to_save)
+    if source_model is not None:
+        _copy_sentence_transformer_modules(source_model, path_to_save)
+
+
+def _copy_sentence_transformer_modules(source_model: str, path_to_save: str):
+
+    if os.path.isdir(source_model):
+        source_dir = source_model
+    else:
+        try:
+            from huggingface_hub import snapshot_download
+            source_dir = snapshot_download(source_model)
+        except Exception:
+            logging.warning(f"Could not resolve source model directory for {source_model}")
+            return
+
+    modules_json = os.path.join(source_dir, "modules.json")
+    if not os.path.exists(modules_json):
+        return  
+
+    shutil.copy(modules_json, os.path.join(path_to_save, "modules.json"))
+
+    with open(modules_json) as f:
+        modules = json.load(f)
+
+    for module in modules:
+        module_path = module.get("path", "")
+        if not module_path or module_path == ".":
+            continue
+        src = os.path.join(source_dir, module_path)
+        dst = os.path.join(path_to_save, module_path)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
 
 
 class VocabTrimmer:
@@ -186,7 +222,7 @@ class VocabTrimmer:
         push_to_hub(self.model, self.model_name, self.tokenizer, repo_id)
 
     def save_pretrained(self, path_to_save):
-        save_pretrained(self.model, self.tokenizer, path_to_save)
+        save_pretrained(self.model, self.tokenizer, path_to_save, source_model=self.model_name)
 
     def text2text_generation(self, input_text: str):
         return pipeline(
@@ -311,11 +347,8 @@ class VocabTrimmer:
 
             self.model.set_output_embeddings(linear)
 
-        # pad vocab size to multiple of 128 for GPU efficiency
-        pad_size = ((len(new_vocab_id) + 127) // 128) * 128
-        self.model.config.vocab_size = pad_size
-        self.model.resize_token_embeddings(pad_size)
-        logging.info(f"vocab padded: {len(new_vocab_id)} -> {pad_size}")
+        self.model.config.vocab_size = len(new_vocab_id)
+        self.model.resize_token_embeddings(self.model.config.vocab_size)
 
         # save to tem directory and load it
         self.model.save_pretrained(path_to_save)
@@ -341,8 +374,8 @@ class VocabTrimmer:
         new_vocab_set = set(new_vocab)
         new_state = []
         for w, s in tqdm(model_state["vocab"]):
-            if w in new_vocab_set:
-                new_state.append((w, old_to_new_id.get(s, s)))
+            if w in new_vocab_set and s in old_to_new_id:
+                new_state.append((w, old_to_new_id[s]))
         if is_dict:
             new_state = dict(new_state)
         model_state["vocab"] = new_state
@@ -423,7 +456,15 @@ class VocabTrimmer:
                 }
             }
         )
+        
+        # ensure embedding matrix covers all token IDs the tokenizer can produce
+        full_tok_size = len(self.tokenizer)
+        final_size = ((full_tok_size + 127) // 128) * 128
+        if final_size != self.model.config.vocab_size:
+            logging.info(f"resizing embedding to cover all tokenizer IDs: {self.model.config.vocab_size} -> {final_size}")
+            self.model.config.vocab_size = final_size
+            self.model.resize_token_embeddings(final_size)
 
-        # save model and tokenizer
+        # save model, tokenizer, and SentenceTransformer modules
         logging.info(f"saving model and tokenizer at {path_to_save}")
         self.save_pretrained(path_to_save)
