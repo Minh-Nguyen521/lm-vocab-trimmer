@@ -3,7 +3,6 @@ import logging
 import os
 from math import prod
 from typing import List
-import shutil
 
 import pandas as pd
 import torch
@@ -20,6 +19,7 @@ from transformers import (
     MT5ForConditionalGeneration,
     pipeline,
 )
+from sentence_transformers import SentenceTransformer
 
 from .util import pretty, safe_rmtree
 from .vocab_miner import vocab_miner
@@ -134,44 +134,9 @@ def push_to_hub(model, source_model, tokenizer, repo_id: str):
     safe_rmtree(os.path.basename(repo_id))
 
 
-def save_pretrained(model, tokenizer, path_to_save, source_model: str = None):
+def save_pretrained(model, tokenizer, path_to_save):
     model.save_pretrained(path_to_save)
     tokenizer.save_pretrained(path_to_save)
-    if source_model is not None:
-        _copy_sentence_transformer_modules(source_model, path_to_save)
-
-
-def _copy_sentence_transformer_modules(source_model: str, path_to_save: str):
-
-    if os.path.isdir(source_model):
-        source_dir = source_model
-    else:
-        try:
-            from huggingface_hub import snapshot_download
-            source_dir = snapshot_download(source_model)
-        except Exception:
-            logging.warning(f"Could not resolve source model directory for {source_model}")
-            return
-
-    modules_json = os.path.join(source_dir, "modules.json")
-    if not os.path.exists(modules_json):
-        return  
-
-    shutil.copy(modules_json, os.path.join(path_to_save, "modules.json"))
-
-    with open(modules_json) as f:
-        modules = json.load(f)
-
-    for module in modules:
-        module_path = module.get("path", "")
-        if not module_path or module_path == ".":
-            continue
-        src = os.path.join(source_dir, module_path)
-        dst = os.path.join(path_to_save, module_path)
-        if os.path.isdir(src):
-            if os.path.exists(dst):
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
 
 
 class VocabTrimmer:
@@ -191,38 +156,38 @@ class VocabTrimmer:
             self.double_embedding = True if self.config.model_type in ["mt5"] else False
         else:
             self.double_embedding = double_embedding
-        if self.config.model_type in ["mt5", "mbart"]:
-            logging.info("model is encoder-decoder LM")
-            if self.config.model_type == "mbart":
-                self.__model_class = MBartForConditionalGeneration
-            else:
-                self.__model_class = MT5ForConditionalGeneration
+        
+        if self.model_name == "google/embeddinggemma-300m":
+            self.__st_model = SentenceTransformer(model_name)
+            self.__model_class = AutoModel
+            self.model = self.__st_model[0].auto_model
         else:
-            logging.info("model is masked LM")
-            if self.config.architectures[0].endswith("TokenClassification"):
-                self.__model_class = AutoModelForTokenClassification
-            elif self.config.architectures[0].endswith("SequenceClassification"):
-                self.__model_class = AutoModelForSequenceClassification
-            elif self.config.architectures[0].endswith("MaskedLM"):
-                self.__model_class = AutoModelForMaskedLM
+            if self.config.model_type in ["mt5", "mbart"]:
+                logging.info("model is encoder-decoder LM")
+                if self.config.model_type == "mbart":
+                    self.__model_class = MBartForConditionalGeneration
+                else:
+                    self.__model_class = MT5ForConditionalGeneration
             else:
-                self.__model_class = AutoModel
+                logging.info("model is masked LM")
+                if self.config.architectures[0].endswith("TokenClassification"):
+                    self.__model_class = AutoModelForTokenClassification
+                elif self.config.architectures[0].endswith("SequenceClassification"):
+                    self.__model_class = AutoModelForSequenceClassification
+                elif self.config.architectures[0].endswith("MaskedLM"):
+                    self.__model_class = AutoModelForMaskedLM
+                else:
+                    self.__model_class = AutoModel
 
-        self.model = self.__model_class.from_pretrained(model_name, config=self.config)
-        self.param_size_full_raw, self.param_size_embedding_raw, self.vocab_size_raw = (
-            self.show_parameter(log=True)
-        )
-        (
-            self.param_size_full_trimmed,
-            self.param_size_embedding_trimmed,
-            self.vocab_size_trimmed,
-        ) = None, None, None
+            self.model = self.__model_class.from_pretrained(model_name, config=self.config)
+        self.param_size_full_raw, self.param_size_embedding_raw, self.vocab_size_raw = self.show_parameter(log=True)
+        self.param_size_full_trimmed, self.param_size_embedding_trimmed, self.vocab_size_trimmed = None, None, None
 
     def push_to_hub(self, repo_id: str):
         push_to_hub(self.model, self.model_name, self.tokenizer, repo_id)
 
     def save_pretrained(self, path_to_save):
-        save_pretrained(self.model, self.tokenizer, path_to_save, source_model=self.model_name)
+        save_pretrained(self.model, self.tokenizer, path_to_save)
 
     def text2text_generation(self, input_text: str):
         return pipeline(
@@ -465,6 +430,11 @@ class VocabTrimmer:
             self.model.config.vocab_size = final_size
             self.model.resize_token_embeddings(final_size)
 
-        # save model, tokenizer, and SentenceTransformer modules
+        # save model and tokenizer
         logging.info(f"saving model and tokenizer at {path_to_save}")
-        self.save_pretrained(path_to_save)
+        if self.model_name == self.model_name == "google/embeddinggemma-300m":
+            self.__st_model[0].auto_model = self.model
+            self.__st_model.save(path_to_save)
+            self.tokenizer.save_pretrained(path_to_save)
+        else:
+            self.save_pretrained(path_to_save)
