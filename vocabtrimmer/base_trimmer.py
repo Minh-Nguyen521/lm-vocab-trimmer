@@ -229,6 +229,7 @@ class VocabTrimmer:
         cache_file_vocab: str = None,
         cache_file_frequency: str = None,
         overwrite: bool = False,
+        streaming: bool = False,
     ):
         """Vocabulary trimming along with vocabulary mining on corpus
 
@@ -244,6 +245,7 @@ class VocabTrimmer:
         :param cache_file_vocab: cache directly to save the mined vocab
         :param cache_file_frequency: cache directly to save the frequency over the corpus used for vocab mining
         :param tokens_to_keep: custom tokens to keep in vocabulary
+        :param streaming: stream the dataset without downloading
         """
 
         # vocab mining
@@ -266,6 +268,7 @@ class VocabTrimmer:
             cache_file_frequency=cache_file_frequency,
             cache_file_vocab=cache_file_vocab,
             overwrite=overwrite,
+            streaming=streaming,
         )
 
         vocab = dict(
@@ -312,8 +315,11 @@ class VocabTrimmer:
 
             self.model.set_output_embeddings(linear)
 
-        self.model.config.vocab_size = len(new_vocab_id)
-        self.model.resize_token_embeddings(self.model.config.vocab_size)
+        # compute final vocab size: main vocab + added tokens, padded to multiple of 128
+        n_added = len([k for k in self.tokenizer.get_added_vocab() if k not in MBART_LANG_ID])
+        final_size = ((len(new_vocab_id) + n_added + 127) // 128) * 128
+        self.model.config.vocab_size = final_size
+        self.model.resize_token_embeddings(final_size, mean_resizing=False)
 
         # save to tem directory and load it
         self.model.save_pretrained(path_to_save)
@@ -354,35 +360,27 @@ class VocabTrimmer:
         model_state = {k: v for k, v in model_state.items() if v is not None}
         self.tokenizer.backend_tokenizer.model = model_class(**model_state)
 
-        # update additional tokens (tokens added after pre-training won't be re-indexed above so need a dirty hack)
-        additional_special_tokens = [
-            i
-            for i in getattr(self.tokenizer, "additional_special_tokens", [])
-            if i not in MBART_LANG_ID
-        ]
-        if len(additional_special_tokens) != 0:
-            logging.info(f"updating additional_special_tokens of tokenizer")
-            logging.info(f"num of add tokens: {len(additional_special_tokens)}")
-            if (
-                self.config.model_type == "mbart"
-            ):  # lang_ids are added to tokenizer when it's instantiated
-                will_append_ids = [
-                    x for x in MBART_LANG_ID if x not in self.tokenizer.vocab
-                ]
-                last_id = (
-                    len(self.tokenizer.vocab)
-                    - 1
-                    - len(additional_special_tokens)
-                    + len(will_append_ids)
-                )
-            else:
-                last_id = len(self.tokenizer.vocab) - 1 - len(additional_special_tokens)
-            new_sp_token_index = {
-                v: n + last_id + 1 for n, v in enumerate(additional_special_tokens)
+        # reindex all added tokens
+        added_vocab = {k: v for k, v in self.tokenizer.get_added_vocab().items() if k not in MBART_LANG_ID}
+        if added_vocab:
+            logging.info(f"reindexing {len(added_vocab)} added tokens")
+            new_added_index = {
+                tok: len(new_vocab_id) + i
+                for i, (tok, _) in enumerate(sorted(added_vocab.items(), key=lambda x: x[1]))
             }
-            _, _, _, path_added_token, _ = self.tokenizer.save_pretrained(path_to_save)
+            id_remap = {old_id: new_added_index[tok] for tok, old_id in added_vocab.items()}
+            self.tokenizer.save_pretrained(path_to_save)
+            path_added_token = os.path.join(path_to_save, "added_tokens.json")
             with open(path_added_token, "w") as f:
-                json.dump(new_sp_token_index, f)
+                json.dump(new_added_index, f)
+            tok_json_path = os.path.join(path_to_save, "tokenizer.json")
+            with open(tok_json_path) as f:
+                tok_data = json.load(f)
+            for entry in tok_data.get("added_tokens", []):
+                if entry["id"] in id_remap:
+                    entry["id"] = id_remap[entry["id"]]
+            with open(tok_json_path, "w") as f:
+                json.dump(tok_data, f)
             self.tokenizer = AutoTokenizer.from_pretrained(path_to_save)
 
         # update config
@@ -422,17 +420,9 @@ class VocabTrimmer:
             }
         )
         
-        # ensure embedding matrix covers all token IDs the tokenizer can produce
-        full_tok_size = len(self.tokenizer)
-        final_size = ((full_tok_size + 127) // 128) * 128
-        if final_size != self.model.config.vocab_size:
-            logging.info(f"resizing embedding to cover all tokenizer IDs: {self.model.config.vocab_size} -> {final_size}")
-            self.model.config.vocab_size = final_size
-            self.model.resize_token_embeddings(final_size)
-
         # save model and tokenizer
         logging.info(f"saving model and tokenizer at {path_to_save}")
-        if self.model_name == self.model_name == "google/embeddinggemma-300m":
+        if self.model_name == "google/embeddinggemma-300m":
             self.__st_model[0].auto_model = self.model
             self.__st_model.save(path_to_save)
             self.tokenizer.save_pretrained(path_to_save)

@@ -50,6 +50,7 @@ def vocab_miner(
     cache_file_vocab: str = None,
     cache_file_frequency: str = None,
     overwrite: bool = False,
+    streaming: bool = False,
 ):
     """Mining language specific vocabulary from corpus
 
@@ -101,7 +102,7 @@ def vocab_miner(
             if os.path.exists(ds):
                 ds, col = _load_local(ds, dataset_column)
             else:
-                ds = load_dataset(ds, dataset_name, split=dataset_split)
+                ds = load_dataset(ds, dataset_name, split=dataset_split, streaming=streaming)
                 col = dataset_column
 
             logging.info(f"caching all tokens to {cache_file_frequency}")
