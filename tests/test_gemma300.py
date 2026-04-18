@@ -18,7 +18,7 @@ trimmer.trim_vocab(
     dataset="bkai-foundation-models/crosslingual",
     dataset_column="pos",
     dataset_split="train",
-    dataset_data_files=["synthetic/cross_corpus.parquet", "synthetic/cross_queries.parquet"],
+    dataset_data_files=["synthetic/cross_corpus.parquet", "synthetic/cross_queries.parquet", "original/merged_queries_vi.json"],
     min_frequency=1,
     streaming=True,
 )

@@ -117,6 +117,15 @@ def vocab_miner(
         for ds, data_file in pairs:
             if os.path.exists(ds):
                 loaded, col = _load_local(ds, dataset_column)
+            elif data_file and data_file.endswith(".json"):
+                # stream JSON directly from HF Hub into memory — no disk cache
+                from huggingface_hub import HfFileSystem
+                fs = HfFileSystem()
+                with fs.open(f"datasets/{ds}/{data_file}") as f:
+                    raw = json.load(f)
+                texts = list(raw.values()) if isinstance(raw, dict) else [t[dataset_column] for t in raw]
+                loaded = [{"text": t} for t in texts]
+                col = "text"
             else:
                 loaded = load_dataset(ds, dataset_name, split=dataset_split, streaming=streaming,
                                       **({"data_files": data_file} if data_file else {}))

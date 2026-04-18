@@ -15,3 +15,6 @@ metric_files
 experiments/result
 experiments/misc
 evaluate_bias_in_mlm
+vn_mteb_results
+vn_mteb_results_jupyter
+crosslingual
