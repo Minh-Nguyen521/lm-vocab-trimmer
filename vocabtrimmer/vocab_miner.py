@@ -102,21 +102,33 @@ def vocab_miner(
     if not os.path.exists(cache_file_frequency):
         os.makedirs(os.path.dirname(cache_file_frequency), exist_ok=True)
 
-        # processing dataset — supports single HF dataset, single local file, or list of local files
+        # build list of (ds_or_path, data_file_or_None) pairs to process
         datasets = dataset if isinstance(dataset, list) else [dataset]
-        fq = defaultdict(int)
+        data_files_list = dataset_data_files if isinstance(dataset_data_files, list) else ([dataset_data_files] if dataset_data_files else [None])
+        pairs = []
         for ds in datasets:
             if os.path.exists(ds):
-                ds, col = _load_local(ds, dataset_column)
+                pairs.append((ds, None))
             else:
-                ds = load_dataset(ds, dataset_name, split=dataset_split, streaming=streaming,
-                                  **({"data_files": dataset_data_files} if dataset_data_files else {}))
+                for df in data_files_list:
+                    pairs.append((ds, df))
+
+        fq = defaultdict(int)
+        for ds, data_file in pairs:
+            if os.path.exists(ds):
+                loaded, col = _load_local(ds, dataset_column)
+            else:
+                loaded = load_dataset(ds, dataset_name, split=dataset_split, streaming=streaming,
+                                      **({"data_files": data_file} if data_file else {}))
                 col = dataset_column
 
             logging.info(f"caching all tokens to {cache_file_frequency}")
             batch = []
-            for t in tqdm(ds):
-                batch.append(t[col])
+            for t in tqdm(loaded):
+                val = t[col]
+                if isinstance(val, list):
+                    val = " ".join(v for v in val if v)
+                batch.append(val)
                 if len(batch) >= chunk:
                     fq = update_fq(chain(*tokenizer(batch, truncation=True, max_length=tokenizer.model_max_length)["input_ids"]), fq)
                     batch = []
