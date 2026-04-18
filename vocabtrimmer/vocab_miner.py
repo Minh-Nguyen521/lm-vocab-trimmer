@@ -30,6 +30,12 @@ def _load_local(path, dataset_column):
     elif path.endswith(".parquet"):
         import pandas as pd
         df = pd.read_parquet(path)
+        if dataset_column not in df.columns:
+            str_cols = [c for c in df.columns if pd.api.types.is_string_dtype(df[c])]
+            if not str_cols:
+                raise ValueError(f"No string columns found in {path}. Available: {list(df.columns)}")
+            logging.warning(f"Column '{dataset_column}' not found in {path}, using '{str_cols[0]}'. Available: {list(df.columns)}")
+            dataset_column = str_cols[0]
         texts = df[dataset_column].dropna().tolist()
         texts = [t if isinstance(t, str) else " ".join(t) for t in texts]
     else:
@@ -51,6 +57,7 @@ def vocab_miner(
     cache_file_frequency: str = None,
     overwrite: bool = False,
     streaming: bool = False,
+    dataset_data_files=None,
 ):
     """Mining language specific vocabulary from corpus
 
@@ -102,7 +109,8 @@ def vocab_miner(
             if os.path.exists(ds):
                 ds, col = _load_local(ds, dataset_column)
             else:
-                ds = load_dataset(ds, dataset_name, split=dataset_split, streaming=streaming)
+                ds = load_dataset(ds, dataset_name, split=dataset_split, streaming=streaming,
+                                  **({"data_files": dataset_data_files} if dataset_data_files else {}))
                 col = dataset_column
 
             logging.info(f"caching all tokens to {cache_file_frequency}")

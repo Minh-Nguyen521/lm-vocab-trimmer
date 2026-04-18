@@ -230,6 +230,7 @@ class VocabTrimmer:
         cache_file_frequency: str = None,
         overwrite: bool = False,
         streaming: bool = False,
+        dataset_data_files=None,
     ):
         """Vocabulary trimming along with vocabulary mining on corpus
 
@@ -246,6 +247,7 @@ class VocabTrimmer:
         :param cache_file_frequency: cache directly to save the frequency over the corpus used for vocab mining
         :param tokens_to_keep: custom tokens to keep in vocabulary
         :param streaming: stream the dataset without downloading
+        :param dataset_data_files: data_files passed to load_dataset (e.g. to target specific parquet files)
         """
 
         # vocab mining
@@ -269,6 +271,7 @@ class VocabTrimmer:
             cache_file_vocab=cache_file_vocab,
             overwrite=overwrite,
             streaming=streaming,
+            dataset_data_files=dataset_data_files,
         )
 
         vocab = dict(
